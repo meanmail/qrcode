@@ -47,8 +47,8 @@ class QRCode(object):
         result = ''
         for i in range(ceil(count / 2)):
             index = i * 2
-            first = self.data[index]
-            second = self.data[index + 1] if (index + 1) < len(self.data) else None
+            first = self.data[index].upper()
+            second = self.data[index + 1].upper() if (index + 1) < len(self.data) else None
             first_code = LETTERS_MAP.index(first)
             if second:
                 second_code = LETTERS_MAP.index(second)
