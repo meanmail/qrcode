@@ -1,18 +1,23 @@
 from math import ceil
 from typing import Callable, List, Tuple
 
-from constants import (ALIGN_MARKER, ALIGN_MARKER_POS, ALIGN_MARKER_WIDTH, BLOCKS_COUNT, CORRECTION_SIZE, Correction,
-                       GALUA, KOEF, LETTERS_MAP, MARGIN, MARKER, MARKER_WIDTH, MASK, MASK_CODE, MASK_METHOD, Mode,
+from constants import (ALIGN_MARKER, ALIGN_MARKER_POS, ALIGN_MARKER_WIDTH, BLOCKS_COUNT,
+                       CORRECTION_SIZE, Correction,
+                       GALUA, KOEF, LETTERS_MAP, MARGIN, MARKER, MARKER_WIDTH, MASK, MASK_CODE,
+                       MASK_METHOD, Mode,
                        REV_GALUA, SIZES, SYMBOL, VERSION_CODE, get_size_field_len)
 from utils import align, trans
 
 
 class QRCode(object):
     def __init__(self, data: str, mode: Mode = Mode.BYTES,
-                 correction: Correction = Correction.M, debug: bool = False):
+                 correction: Correction = Correction.M,
+                 mask_num: int = 3,
+                 debug: bool = False):
         self.data = data
         self.mode = mode
         self.correction = correction
+        self.mask_num = mask_num
         self.debug = debug
         self.encoded_data, self.version = self.encode()
 
@@ -216,7 +221,8 @@ class QRCode(object):
         self.draw(x + MARKER_WIDTH + 1, y - 1, [code[8:9]])
         self.draw(x + MARKER_WIDTH + 1, y - MARKER_WIDTH - 1, trans(code[15:8:-1]))
 
-        self.draw(x + MARKER_WIDTH + 1, self.width - x - MARKER_WIDTH - 1, trans([1] + list(reversed(code[0:7]))))
+        self.draw(x + MARKER_WIDTH + 1, self.width - x - MARKER_WIDTH - 1,
+                  trans([1] + list(reversed(code[0:7]))))
         self.draw(self.width - x - MARKER_WIDTH - 1, y, [code[7:]])
 
     @staticmethod
@@ -235,26 +241,29 @@ class QRCode(object):
 
         return self.apply_mask(mask_num, bit, x, y)
 
-    def draw_data(self, data: List[int]) -> int:
-        mask_num = 3
+    def draw_data(self, data: List[int]):
         down = False
         index = 0
         for x in range(self.width - 1 - MARGIN, 0, -2):
             if x <= MARGIN + MARKER_WIDTH - 1:
                 x -= 1
-            start, stop, step = (0, self.width - MARGIN, 1) if down else (self.width - 1 - MARGIN, -1, -1)
+
+            if down:
+                start, stop, step = (0, self.width - MARGIN, 1)
+            else:
+                start, stop, step = (self.width - 1 - MARGIN, -1, -1)
+
             for y in range(start, stop, step):
                 if self.mask[y][x] == 0:
-                    bit = self.get_bit(index, data, mask_num, x - MARGIN, y - MARGIN)
+                    bit = self.get_bit(index, data, self.mask_num, x - MARGIN, y - MARGIN)
                     self.draw(x, y, [[bit]])
                     index += 1
                 xx = x - 1
                 if self.mask[y][xx] == 0:
-                    bit = self.get_bit(index, data, mask_num, xx - MARGIN, y - MARGIN)
+                    bit = self.get_bit(index, data, self.mask_num, xx - MARGIN, y - MARGIN)
                     self.draw(xx, y, [[bit]])
                     index += 1
             down = not down
-        return mask_num
 
     def draw(self, x: int, y: int, data: List[List[int]]) -> None:
         for i in range(len(data)):
@@ -263,15 +272,93 @@ class QRCode(object):
                     self.canvas[y + i][x + j] = data[i][j]
                 self.mask[y + i][x + j] = 1
 
-    def __str__(self) -> str:
+    def cost_rule1(self, horizontal: bool):
+        """ five and more elements
+        """
+
+        def get_color(x, y):
+            return self.canvas[y][x] if horizontal else self.canvas[x][y]
+
+        cost = 0
+        for y in range(MARGIN, self.width - MARGIN):
+            counter = 1
+            color = get_color(MARGIN, y)
+            for x in range(MARGIN + 1, self.width - MARGIN):
+                current_color = get_color(x, y)
+                if current_color == color:
+                    counter += 1
+                else:
+                    if counter >= 5:
+                        cost += counter - 2
+                    color = current_color
+                    counter = 1
+            if counter >= 5:
+                cost += counter - 2
+        return cost
+
+    def cost_rule2(self):
+        """ squares
+        """
+        cost = 0
+        for y in range(MARGIN, self.width - MARGIN - 1):
+            for x in range(MARGIN + 1, self.width - MARGIN - 1):
+                color = self.canvas[y][x]
+                if (self.canvas[y][x + 1] == color and
+                        self.canvas[y + 1][x + 1] == color and
+                        self.canvas[y + 1][x] == color):
+                    cost += 3
+        return cost
+
+    def cost_rule3(self, horizontal: bool):
+        def get_color(x, y):
+            return self.canvas[y][x] if horizontal else self.canvas[x][y]
+
+        cost = 0
+        for y in range(MARGIN, self.width - MARGIN):
+            x = MARGIN
+            while x < self.width - MARGIN - 11:
+                line = [get_color(x + i, y) for i in range(11)]
+                if line == [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0]:
+                    cost += 40
+                    x += 7
+                if line == [0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1]:
+                    cost += 40
+                    x += 11
+                else:
+                    x += 1
+        return cost
+
+    def cost_rule4(self):
+        counter = 0
+        for y in range(MARGIN, self.width - MARGIN):
+            for x in range(MARGIN + 1, self.width - MARGIN):
+                counter += self.canvas[y][x]
+        return abs(round((counter / (self.width - 2 * MARGIN) ** 2) * 100 - 50)) * 2
+
+    @property
+    def cost(self):
+        self.draw_all()
+
+        cost = self.cost_rule1(horizontal=True)
+        cost += self.cost_rule1(horizontal=False)
+        cost += self.cost_rule2()
+        cost += self.cost_rule3(horizontal=True)
+        cost += self.cost_rule3(horizontal=False)
+        cost += self.cost_rule4()
+        return cost
+
+    def draw_all(self):
         self.draw_border()
         self.draw_rules()
         self.draw_markers()
         self.draw_align_markers()
         self.draw_version()
         self.draw_mask_code(3)
-        mask_num = self.draw_data(self.get_prepared_data())
-        self.draw_mask_code(mask_num)
+        self.draw_data(self.get_prepared_data())
+        self.draw_mask_code(self.mask_num)
+
+    def __str__(self) -> str:
+        self.draw_all()
 
         output = ''
         for line, mask_line in zip(self.canvas, self.mask):

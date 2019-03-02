@@ -166,3 +166,4 @@ venv.bak/
 # mypy
 .mypy_cache/
 
+/.idea/code-comments.xml
